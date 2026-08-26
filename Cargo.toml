@@ -1,0 +1,28 @@
+[package]
+name = "nix-blossom-publish"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Publish a Nix binary cache to Blossom + Nostr"
+
+[[bin]]
+name = "nix-blossom-publish"
+path = "src/main.rs"
+
+[dependencies]
+nostr = { version = "0.44", features = ["nip44"] }
+nostr-sdk = { version = "0.44", default-features = false, features = ["nip44", "nip59"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+rmp-serde = "1.3"
+serde = { version = "1", features = ["derive"] }
+serde_bytes = "0.11"
+sha2 = "0.10"
+bech32 = "0.11"
+hex = "0.4"
+base64 = "0.22"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+clap = { version = "4.5", features = ["derive"] }
+anyhow = "1"
+walkdir = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
