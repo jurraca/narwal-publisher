@@ -1,5 +1,6 @@
 mod blossom;
 mod manifest;
+mod nar;
 mod nhash;
 mod nostr_pub;
 mod scan;

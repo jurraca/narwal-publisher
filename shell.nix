@@ -5,6 +5,8 @@ pkgs.mkShell {
     gcc
     pkg-config
     clang
+    rustc
+    cargo
   ];
 
   buildInputs = with pkgs; [
