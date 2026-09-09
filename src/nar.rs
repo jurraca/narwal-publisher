@@ -9,7 +9,6 @@
 
 use anyhow::Result;
 use nix_archive::nar::{hash_path, CaseHack, NarHash};
-use std::io::Write;
 use std::path::Path;
 
 /// A NAR archive with its hash and size.
@@ -51,6 +50,7 @@ pub fn encode_store_path(path: &Path) -> Result<NarOutput> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sha2::Digest;
 
     #[test]
     fn encode_hash_matches_bytes() {
@@ -63,7 +63,7 @@ mod tests {
 
         // The hash from hash_path must match a direct SHA-256 of the bytes.
         let mut hasher = sha2::Sha256::new();
-        sha2::Digest::update(&mut hasher, &nar.bytes);
+        hasher.update(&nar.bytes);
         let direct_hash: [u8; 32] = hasher.finalize().into();
 
         assert_eq!(nar.nar_hash, direct_hash);
