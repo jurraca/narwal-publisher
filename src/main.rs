@@ -1,21 +1,25 @@
 mod blossom;
+mod blossom_fetch;
 mod closure;
 mod compress;
 mod manifest;
 mod nar;
 mod narinfo;
 mod nhash;
+mod nostr_fetch;
 mod nostr_pub;
 mod refscan;
 mod scan;
 mod signing;
 mod store_path;
+mod tree_reader;
 
 use anyhow::{anyhow, Result};
 use clap::Parser;
 use nix_derivation::{StoreDir, StorePath};
 use nix_narinfo::Compression;
 use nostr::prelude::Keys;
+use std::collections::HashMap;
 use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 
@@ -98,13 +102,43 @@ async fn main() -> Result<()> {
         other => return Err(anyhow!("unknown compression: {}", other)),
     };
 
-    // Step 1: Resolve closure (dependencies first, self-contained).
+    // Step 1: Fetch the latest root event from Nostr (atomic update guarantee).
+    // We MUST fetch the latest tree before uploading anything, so that we
+    // merge with the current state rather than overwriting it.
+    tracing::info!("fetching latest root event from Nostr");
+    let author_hex = keys.public_key().to_hex();
+    let existing_root = nostr_fetch::fetch_latest_root(nostr_fetch::FetchConfig {
+        keys: keys.clone(),
+        relays: cli.relays.clone(),
+        channel: cli.channel.clone(),
+        author: Some(author_hex),
+    })
+    .await?;
+
+    let fetcher = blossom_fetch::BlossomFetcher::new(cli.blossom_servers.clone());
+
+    // Flatten existing tree (if any) into an entry map.
+    let mut existing_entries: HashMap<String, manifest::DirEntry> = HashMap::new();
+
+    if let Some(ref root) = existing_root {
+        tracing::info!("found existing cache: {}", root.htree_uri);
+        let root_hash = tree_reader::parse_nhash_uri(&root.htree_uri)?;
+        let entries = tree_reader::flatten_tree(&root_hash, &fetcher).await?;
+        tracing::info!("existing tree: {} entries", entries.len());
+        for entry in entries {
+            existing_entries.insert(entry.name.clone(), entry);
+        }
+    } else {
+        tracing::info!("no existing cache found — creating new");
+    }
+
+    // Step 2: Resolve closure of input paths.
     tracing::info!("resolving closure of {} input paths", cli.store_paths.len());
     let closure_entries = closure::resolve(&cli.store_paths, &cli.store_dir)?;
     tracing::info!("closure: {} paths", closure_entries.len());
 
-    // Step 2: Process each path — encode NAR, compress, build narinfo, sign.
-    let mut manifest_entries = Vec::with_capacity(closure_entries.len() + 1);
+    // Step 3: Process each path — encode NAR, compress, build narinfo, sign, upload.
+    let mut new_entries: Vec<manifest::DirEntry> = Vec::with_capacity(closure_entries.len());
 
     for entry in &closure_entries {
         let basename = entry
@@ -114,13 +148,22 @@ async fn main() -> Result<()> {
             .to_string_lossy()
             .to_string();
 
+        let narinfo_name = format!("{}.narinfo", store_path::hash_part(&basename));
+
+        // Skip if this narinfo is already in the tree (same name = same content,
+        // since narinfo blobs are content-addressed).
+        if existing_entries.contains_key(&narinfo_name) {
+            tracing::info!("skipping {} (already in cache)", basename);
+            new_entries.push(existing_entries[&narinfo_name].clone());
+            continue;
+        }
+
         tracing::info!("processing {}", basename);
 
-        // 2a. Encode NAR (we already have hash+size from closure scan, but
-        // we need the bytes for compression — unless we stream later).
+        // 3a. Encode NAR.
         let nar_output = nar::encode_store_path(&entry.path)?;
 
-        // Verify hash matches what closure scan found.
+        // Verify hash matches closure scan.
         if nar_output.nar_hash != entry.nar_hash {
             return Err(anyhow!(
                 "NAR hash mismatch for {}: closure scan gave {:?}, encode gave {:?}",
@@ -130,7 +173,7 @@ async fn main() -> Result<()> {
             ));
         }
 
-        // 2b. Compress NAR.
+        // 3b. Compress NAR.
         let compressed = compress::compress_xz(&nar_output.bytes)?;
         let url = compress::nar_url(&compressed.file_hash);
 
@@ -141,17 +184,14 @@ async fn main() -> Result<()> {
             url
         );
 
-        // 2c. Parse store path for narinfo builder.
+        // 3c. Parse store path for narinfo builder.
         let store_path = store_path::parse_basename(&basename)?;
 
-        // 2d. Parse reference hashparts into StorePaths.
+        // 3d. Parse reference hashparts into StorePaths.
         let ref_paths: Vec<StorePath> = entry
             .references
             .iter()
             .filter_map(|hp| {
-                // Reconstruct full basename from hashpart by looking it up
-                // in the closure entries. If not found (shouldn't happen
-                // since closure is complete), skip.
                 closure_entries
                     .iter()
                     .find(|e| {
@@ -174,9 +214,8 @@ async fn main() -> Result<()> {
             })
             .collect();
 
-        // 2e. Build narinfo.
+        // 3e. Build narinfo.
         let sigs: Vec<nix_narinfo::NarInfoSignature> = if let Some(ref sk) = signing_key {
-            // Build unsigned narinfo first to get the fingerprint.
             let unsigned = narinfo::build_narinfo(
                 &store_dir,
                 &store_path,
@@ -207,12 +246,9 @@ async fn main() -> Result<()> {
             &sigs,
         )?;
 
-        tracing::info!(
-            "  narinfo: {} bytes",
-            narinfo_output.bytes.len()
-        );
+        tracing::info!("  narinfo: {} bytes", narinfo_output.bytes.len());
 
-        // 2f. Upload NAR blob + narinfo blob to Blossom.
+        // 3f. Upload NAR blob + narinfo blob to Blossom.
         if !cli.dry_run {
             let uploader =
                 blossom::BlossomUploader::new(keys.clone(), cli.blossom_servers.clone());
@@ -223,16 +259,25 @@ async fn main() -> Result<()> {
             uploader.upload_bytes(&narinfo_output.bytes).await?;
         }
 
-        // 2g. Collect manifest entry for the narinfo blob.
+        // 3g. Collect manifest entry for the narinfo blob.
         let narinfo_hash = compress::sha256(&narinfo_output.bytes);
-        manifest_entries.push(manifest::DirEntry {
-            name: format!("{}.narinfo", store_path::hash_part(&basename)),
+        new_entries.push(manifest::DirEntry {
+            name: narinfo_name,
             hash: narinfo_hash,
             size: narinfo_output.bytes.len() as u64,
         });
     }
 
-    // Step 3: Synthesize nix-cache-info.
+    // Step 4: Merge new entries with existing entries.
+    for entry in new_entries {
+        let name = entry.name.clone();
+        existing_entries.insert(name, entry);
+    }
+
+    let all_entries: Vec<manifest::DirEntry> = existing_entries.into_values().collect();
+    tracing::info!("total entries after merge: {}", all_entries.len());
+
+    // Step 5: Synthesize nix-cache-info.
     let cache_info = synthesize_cache_info();
     let cache_info_hash = compress::sha256(&cache_info);
     tracing::info!("nix-cache-info: {} bytes", cache_info.len());
@@ -242,14 +287,15 @@ async fn main() -> Result<()> {
         uploader.upload_bytes(&cache_info).await?;
     }
 
-    manifest_entries.push(manifest::DirEntry {
+    let mut final_entries = all_entries;
+    final_entries.push(manifest::DirEntry {
         name: "nix-cache-info".into(),
         hash: cache_info_hash,
         size: cache_info.len() as u64,
     });
 
-    // Step 4: Build hashtree manifest.
-    let (manifest_nodes, root_hash) = manifest::build_directory_tree(manifest_entries);
+    // Step 6: Build hashtree manifest.
+    let (manifest_nodes, root_hash) = manifest::build_directory_tree(final_entries);
     tracing::info!(
         "manifest tree: {} nodes, root hash={}",
         manifest_nodes.len(),
@@ -264,7 +310,7 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Step 5: Encode nhash → htree URI.
+    // Step 7: Encode nhash → htree URI.
     let nhash = nhash::nhash_encode(&root_hash)?;
     let htree_uri = format!("htree://{}", nhash);
     tracing::info!("htree URI: {}", htree_uri);
@@ -274,8 +320,8 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    // Step 6: Publish Nostr event.
-    // Derive public key string from signing key for nixSigKey tag.
+    // Step 8: Publish Nostr event (atomic: we only publish after all blobs
+    // are uploaded, so clients never see a root pointing to missing blobs).
     let nix_sig_keys: Vec<String> = signing_key
         .iter()
         .map(|sk| sk.public_key_string())
