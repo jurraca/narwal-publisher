@@ -1,8 +1,10 @@
 mod blossom;
+mod closure;
 mod manifest;
 mod nar;
 mod nhash;
 mod nostr_pub;
+mod refscan;
 mod scan;
 mod store_path;
 
