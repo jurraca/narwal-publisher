@@ -6,7 +6,7 @@
 
 use anyhow::{anyhow, Result};
 use nix_derivation::{NixHash, StoreDir, StorePath};
-use nix_narinfo::{Compression, NarInfo, NarInfoBuilder, NarInfoSignature};
+use nix_narinfo::{Compression, NarInfoBuilder, NarInfoSignature};
 
 /// A complete narinfo ready for signing and upload.
 pub struct NarInfoOutput {
@@ -73,6 +73,7 @@ pub fn build_narinfo(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nix_narinfo::NarInfo;
 
     #[test]
     fn build_minimal_narinfo() {

@@ -5,6 +5,10 @@ edition = "2021"
 license = "MIT"
 description = "Publish a Nix binary cache to Blossom + Nostr"
 
+[lib]
+name = "nix_blossom_publish"
+path = "src/lib.rs"
+
 [[bin]]
 name = "nix-blossom-publish"
 path = "src/main.rs"
