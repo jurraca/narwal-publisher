@@ -5,6 +5,7 @@
 
 use anyhow::{anyhow, Result};
 use reqwest::Client;
+use sha2::{Digest, Sha256};
 
 /// A Blossom client that fetches blobs from servers.
 pub struct BlossomFetcher {
@@ -23,12 +24,28 @@ impl BlossomFetcher {
     /// Fetch a blob by its SHA-256 hex hash.
     ///
     /// Tries each server in order, returns the first successful response.
+    /// Verifies that the downloaded content hashes to the requested hash.
     pub async fn fetch(&self, hash_hex: &str) -> Result<Vec<u8>> {
         for server in &self.servers {
             let url = format!("{}/{}", server.trim_end_matches('/'), hash_hex);
             match self.http.get(&url).send().await {
                 Ok(resp) if resp.status().is_success() => {
                     let bytes = resp.bytes().await?;
+                    // Verify content hash to prevent tampering/corruption
+                    let actual = {
+                        let mut hasher = Sha256::new();
+                        hasher.update(&bytes);
+                        hex::encode(hasher.finalize())
+                    };
+                    if actual != hash_hex {
+                        tracing::warn!(
+                            "hash mismatch from {}: expected {}, got {}",
+                            server,
+                            &hash_hex[..12.min(hash_hex.len())],
+                            &actual[..12.min(actual.len())],
+                        );
+                        continue; // try next server
+                    }
                     return Ok(bytes.to_vec());
                 }
                 Ok(resp) => {

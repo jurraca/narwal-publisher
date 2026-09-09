@@ -17,7 +17,6 @@ pub mod nhash;
 pub mod nostr_fetch;
 pub mod nostr_pub;
 pub mod refscan;
-pub mod scan;
 pub mod signing;
 pub mod store_path;
 pub mod tree_reader;
@@ -99,7 +98,15 @@ pub async fn publish(config: PublishConfig) -> Result<()> {
     })
     .await?;
 
-    let fetcher = blossom_fetch::BlossomFetcher::new(config.blossom_servers.clone());
+    // Use servers from the Nostr event for fetching existing tree (if any),
+    // falling back to CLI servers for new uploads.
+    let fetch_servers = existing_root
+        .as_ref()
+        .filter(|r| !r.blossom_servers.is_empty())
+        .map(|r| r.blossom_servers.clone())
+        .unwrap_or_else(|| config.blossom_servers.clone());
+
+    let fetcher = blossom_fetch::BlossomFetcher::new(fetch_servers);
 
     // Step 2: Flatten existing tree (if any) into an entry map.
     let mut existing_entries: HashMap<String, manifest::DirEntry> = HashMap::new();
@@ -157,8 +164,8 @@ pub async fn publish(config: PublishConfig) -> Result<()> {
         }
 
         // 4b. Compress NAR.
-        let compressed = compress::compress_xz(&nar_output.bytes)?;
-        let url = compress::nar_url(&compressed.file_hash);
+        let compressed = compress::compress(&nar_output.bytes, compression.clone())?;
+        let url = compress::nar_url(&compressed.file_hash, compression.clone())?;
 
         tracing::info!(
             "  NAR: {} bytes → {} bytes compressed, url={}",

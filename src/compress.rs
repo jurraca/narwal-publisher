@@ -6,6 +6,7 @@
 //! component (`nar/<nixbase32(filehash)>.nar.xz`).
 
 use anyhow::Result;
+use nix_narinfo::Compression;
 use sha2::{Digest, Sha256};
 use xz2::write::XzEncoder;
 
@@ -24,9 +25,25 @@ pub struct CompressedNar {
 
 /// Compress NAR bytes with xz and compute the FileHash.
 pub fn compress_xz(nar_bytes: &[u8]) -> Result<CompressedNar> {
-    let mut encoder = XzEncoder::new(Vec::new(), XZ_LEVEL);
-    std::io::Write::write_all(&mut encoder, nar_bytes)?;
-    let compressed = encoder.finish()?;
+    compress(nar_bytes, Compression::Xz)
+}
+
+/// Compress NAR bytes with the given compression and compute the FileHash.
+pub fn compress(nar_bytes: &[u8], compression: Compression) -> Result<CompressedNar> {
+    let compressed = match compression {
+        Compression::Xz => {
+            let mut encoder = XzEncoder::new(Vec::new(), XZ_LEVEL);
+            std::io::Write::write_all(&mut encoder, nar_bytes)?;
+            encoder.finish()?
+        }
+        Compression::Zstd => {
+            // zstd level 6, matching Nix's default
+            let compressed = zstd::encode_all(nar_bytes, 6)?;
+            compressed
+        }
+        Compression::None => nar_bytes.to_vec(),
+        other => return Err(anyhow::anyhow!("unsupported compression: {:?}", other)),
+    };
 
     let file_hash = sha256(&compressed);
     let file_size = compressed.len() as u64;
@@ -38,12 +55,18 @@ pub fn compress_xz(nar_bytes: &[u8]) -> Result<CompressedNar> {
     })
 }
 
-/// Build the narinfo URL field for a given file hash.
+/// Build the narinfo URL field for a given file hash and compression.
 ///
-/// Returns `nar/<nixbase32(filehash)>.nar.xz`.
-pub fn nar_url(file_hash: &[u8; 32]) -> String {
+/// Returns `nar/<nixbase32(filehash)>.nar.<ext>`.
+pub fn nar_url(file_hash: &[u8; 32], compression: Compression) -> Result<String> {
     let encoded = nix_derivation::nixbase32::encode(file_hash);
-    format!("nar/{}.nar.xz", encoded)
+    let ext = match compression {
+        Compression::Xz => "nar.xz",
+        Compression::Zstd => "nar.zst",
+        Compression::None => "nar",
+        _ => return Err(anyhow::anyhow!("unsupported compression for URL")),
+    };
+    Ok(format!("nar/{}.{}", encoded, ext))
 }
 
 /// Compute SHA-256 of arbitrary bytes.
@@ -83,7 +106,7 @@ mod tests {
     #[test]
     fn nar_url_uses_nixbase32() {
         let hash = [0x42; 32];
-        let url = nar_url(&hash);
+        let url = nar_url(&hash, Compression::Xz).unwrap();
         assert!(url.starts_with("nar/"));
         assert!(url.ends_with(".nar.xz"));
 
