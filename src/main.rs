@@ -4,6 +4,7 @@ mod nar;
 mod nhash;
 mod nostr_pub;
 mod scan;
+mod store_path;
 
 use anyhow::{anyhow, Result};
 use clap::Parser;
