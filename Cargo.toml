@@ -28,8 +28,11 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 nix-archive = "0.4"
 nix-derivation = "0.6"
+nix-narinfo = "0.4"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
 xz2 = "0.1"
 
 [dev-dependencies]
 tempfile = "3"
 sha2 = "0.10"
+rand = "0.8"

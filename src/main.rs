@@ -3,10 +3,12 @@ mod closure;
 mod compress;
 mod manifest;
 mod nar;
+mod narinfo;
 mod nhash;
 mod nostr_pub;
 mod refscan;
 mod scan;
+mod signing;
 mod store_path;
 
 use anyhow::{anyhow, Result};
