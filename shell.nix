@@ -14,6 +14,7 @@ pkgs.mkShell {
     openssl
     sqlite
     llvmPackages.libclang
+    xz
   ];
 
   LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";

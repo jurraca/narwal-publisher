@@ -1,5 +1,6 @@
 mod blossom;
 mod closure;
+mod compress;
 mod manifest;
 mod nar;
 mod nhash;
