@@ -197,7 +197,7 @@ impl BlossomUploader {
         }
     }
 
-    /// Upload a blob to all configured servers.
+    /// Upload a blob to all configured servers (redundant replication).
     ///
     /// For each server:
     /// 1. HEAD /<sha256> — skip if already exists.
@@ -205,21 +205,24 @@ impl BlossomUploader {
     /// 3. PUT /upload — try the upload.
     /// 4. On 413 from PUT: skip to next server.
     ///
-    /// Returns Ok(hash) after the first successful upload.
-    /// Returns Err with a comprehensive message if all servers reject or fail.
+    /// Uploads to ALL servers for redundancy — does not stop at first success.
+    /// Returns Ok(hash) if at least one server has the blob after all attempts.
+    /// Returns Err only if every server failed.
     pub async fn upload(&self, data: &[u8]) -> Result<String> {
         let hash = Self::hash_hex(data);
         let size = data.len();
         let should_preflight = size > PREFLIGHT_SIZE_THRESHOLD;
 
         let mut errors: Vec<ServerError> = Vec::new();
+        let mut success_count = 0usize;
 
         for server in &self.servers {
             // 1. Existence check (BUD-01)
             match self.check_exists(server, &hash).await {
                 Ok(true) => {
                     tracing::debug!("blob {} already exists on {}", &hash[..12], server);
-                    return Ok(hash);
+                    success_count += 1;
+                    continue; // try next server for redundancy
                 }
                 Ok(false) => {}
                 Err(e) => {
@@ -247,7 +250,10 @@ impl BlossomUploader {
 
             // 3. Upload (BUD-02)
             match self.upload_to_server(server, data, &hash).await {
-                Ok(()) => return Ok(hash),
+                Ok(()) => {
+                    success_count += 1;
+                    tracing::debug!("uploaded {} to {}", &hash[..12], server);
+                }
                 Err(e) => {
                     let err_str = e.to_string();
                     let status = if err_str.starts_with("413") {
@@ -268,6 +274,17 @@ impl BlossomUploader {
                     tracing::warn!("upload to {} failed: {}", server, err_str);
                 }
             }
+        }
+
+        if success_count > 0 {
+            tracing::info!(
+                "blob {} ({} bytes): {}/{} servers have it",
+                &hash[..12],
+                size,
+                success_count,
+                self.servers.len(),
+            );
+            return Ok(hash);
         }
 
         // All servers failed — build comprehensive error
