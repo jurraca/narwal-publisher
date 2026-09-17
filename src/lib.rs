@@ -8,6 +8,7 @@
 
 pub mod blossom;
 pub mod blossom_fetch;
+pub mod bunker;
 pub mod closure;
 pub mod compress;
 pub mod manifest;
@@ -26,9 +27,11 @@ use anyhow::{anyhow, Result};
 use nix_derivation::{StoreDir, StorePath};
 use nix_narinfo::Compression;
 use nostr::prelude::Keys;
+use nostr::signer::NostrSigner;
 use std::collections::HashMap;
 use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 /// Configuration for a publish operation.
 pub struct PublishConfig {
@@ -36,7 +39,12 @@ pub struct PublishConfig {
     pub store_paths: Vec<PathBuf>,
     /// Path to the file holding the Nostr secret key (nsec or hex).
     /// Key material is file-only by design: CLI args leak via ps/history.
-    pub sec_file: PathBuf,
+    /// Exactly one of `sec_file` / `bunker` must be set.
+    pub sec_file: Option<PathBuf>,
+    /// NIP-46 bunker URL (`bunker://<pubkey>?relay=...&secret=...`).
+    /// Remote signing: the identity key never touches this machine.
+    /// Exactly one of `sec_file` / `bunker` must be set.
+    pub bunker: Option<String>,
     /// Blossom server URLs to upload to.
     pub blossom_servers: Vec<String>,
     /// Nostr relay URLs to publish to.
@@ -67,8 +75,14 @@ pub async fn publish(config: PublishConfig) -> Result<()> {
         return Err(anyhow!("no store paths given"));
     }
 
-    let sec_contents = secrets::read_secret_file(&config.sec_file, "Nostr identity")?;
-    let keys = Keys::parse(&sec_contents)?;
+    let signer: Arc<dyn NostrSigner> = match (&config.sec_file, &config.bunker) {
+        (Some(path), None) => {
+            let sec_contents = secrets::read_secret_file(path, "Nostr identity")?;
+            Arc::new(Keys::parse(&sec_contents)?)
+        }
+        (None, Some(url)) => Arc::new(bunker::BunkerSigner::new(url)?),
+        _ => return Err(anyhow!("exactly one of --sec-file or --bunker is required")),
+    };
     let store_dir = StoreDir::new(config.store_dir.to_string_lossy().as_ref())?;
 
     // Load signing key if provided.
@@ -92,9 +106,9 @@ pub async fn publish(config: PublishConfig) -> Result<()> {
 
     // Step 1: Fetch the latest root event from Nostr (atomic update guarantee).
     tracing::info!("fetching latest root event from Nostr");
-    let author_hex = keys.public_key().to_hex();
+    let author_hex = signer.get_public_key().await?.to_hex();
     let existing_root = nostr_fetch::fetch_latest_root(nostr_fetch::FetchConfig {
-        keys: keys.clone(),
+        signer: signer.clone(),
         relays: config.relays.clone(),
         channel: config.channel.clone(),
         author: Some(author_hex),
@@ -133,6 +147,13 @@ pub async fn publish(config: PublishConfig) -> Result<()> {
 
     // Step 4: Process each path — encode NAR, compress, build narinfo, sign, upload.
     let mut new_entries: Vec<manifest::DirEntry> = Vec::with_capacity(closure_entries.len());
+
+    // One uploader for the whole run: it caches the session auth token,
+    // so per-blob uploads share a token instead of minting one each.
+    // Skipped entirely on dry runs (no uploads happen).
+    let uploader = (!config.dry_run).then(|| {
+        blossom::BlossomUploader::new(signer.clone(), config.blossom_servers.clone())
+    });
 
     for entry in &closure_entries {
         let basename = entry
@@ -243,12 +264,8 @@ pub async fn publish(config: PublishConfig) -> Result<()> {
 
         // 4f. Upload NAR blob + narinfo blob to Blossom.
         if !config.dry_run {
-            let uploader =
-                blossom::BlossomUploader::new(keys.clone(), config.blossom_servers.clone());
+            let uploader = uploader.as_ref().expect("uploader built for non-dry run");
             uploader.upload_bytes(&compressed.bytes).await?;
-
-            let uploader =
-                blossom::BlossomUploader::new(keys.clone(), config.blossom_servers.clone());
             uploader.upload_bytes(&narinfo_output.bytes).await?;
         }
 
@@ -276,7 +293,7 @@ pub async fn publish(config: PublishConfig) -> Result<()> {
     tracing::info!("nix-cache-info: {} bytes", cache_info.len());
 
     if !config.dry_run {
-        let uploader = blossom::BlossomUploader::new(keys.clone(), config.blossom_servers.clone());
+        let uploader = uploader.as_ref().expect("uploader built for non-dry run");
         uploader.upload_bytes(&cache_info).await?;
     }
 
@@ -296,7 +313,7 @@ pub async fn publish(config: PublishConfig) -> Result<()> {
     );
 
     if !config.dry_run {
-        let uploader = blossom::BlossomUploader::new(keys.clone(), config.blossom_servers.clone());
+        let uploader = uploader.as_ref().expect("uploader built for non-dry run");
         for (bytes, hash) in &manifest_nodes {
             tracing::debug!("uploading manifest node hash={}", hex::encode(hash));
             uploader.upload_bytes(bytes).await?;
@@ -320,7 +337,7 @@ pub async fn publish(config: PublishConfig) -> Result<()> {
         .collect();
 
     nostr_pub::publish_cache(nostr_pub::PublishConfig {
-        keys,
+        signer,
         relays: config.relays,
         channel: config.channel,
         htree_uri,

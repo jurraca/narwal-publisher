@@ -13,6 +13,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "aes"
+version = "0.8.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b169f7a6d4742236a0a00c541b845991d0ac43e546831af1249753ab4c3aa3a0"
+dependencies = [
+ "cfg-if",
+ "cipher",
+ "cpufeatures 0.2.17",
+]
+
+[[package]]
 name = "aho-corasick"
 version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1062,24 +1073,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "negentropy"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f0efe882e02d206d8d279c20eb40e03baf7cb5136a1476dc084a324fbc3ec42d"
-
-[[package]]
-name = "nix-archive"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "33fe22db5b0368d37d6800aed4a3c4db426ac990edffd5c71a9bed506e1a6873"
-dependencies = [
- "libc",
- "rustix",
- "sha2",
- "thiserror 2.0.20",
-]
-
-[[package]]
 name = "narwal-cli"
 version = "0.1.0"
 dependencies = [
@@ -1107,6 +1100,24 @@ dependencies = [
  "walkdir",
  "xz2",
  "zstd",
+]
+
+[[package]]
+name = "negentropy"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f0efe882e02d206d8d279c20eb40e03baf7cb5136a1476dc084a324fbc3ec42d"
+
+[[package]]
+name = "nix-archive"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "33fe22db5b0368d37d6800aed4a3c4db426ac990edffd5c71a9bed506e1a6873"
+dependencies = [
+ "libc",
+ "rustix",
+ "sha2",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -1146,6 +1157,7 @@ version = "0.44.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40ff7b77ef428b40aa2834a6acbae38a0e104c98b306208ca4b87a420d579a4b"
 dependencies = [
+ "aes",
  "base64",
  "bech32",
  "bip39",

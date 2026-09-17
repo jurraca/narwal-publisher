@@ -49,6 +49,15 @@ narwal-cli /nix/store/<hash>-hello-2.12.1 \
   --nix-sig-key ./mycache.sec \
   --dry-run
 
+# same, but signing via a NIP-46 bunker instead of a local key file:
+narwal-cli /nix/store/<hash>-hello-2.12.1 \
+  --bunker "bunker://<bunker-pubkey>?relay=wss://<relay>&secret=<token>" \
+  --blossom http://<blossom-host>:3000 \
+  --relay ws://<relay-host>:32847 \
+  --channel test \
+  --nix-sig-key ./mycache.sec \
+  --dry-run
+
 # for real: drop --dry-run
 ```
 
@@ -75,8 +84,17 @@ leaks through the process table (`ps`), shell history, and CI logs.
 
 Both files are refused at load time unless owner-only accessible
 (`chmod 600`); group/world-readable key files are a hard error, not
-a warning. Planned next step: NIP-46 bunker support so the Nostr key
-never touches the publisher machine.
+a warning.
+
+NIP-46 bunkers are supported as an alternative to `--sec-file`:
+pass `--bunker "bunker://<pubkey>?relay=…&secret=…"` (or
+`NARWAL_BUNKER`) and the identity key never touches the publisher
+machine — signatures are requested from the signer app over Nostr.
+Exactly one of `--sec-file` / `--bunker` is required. The app holds
+only an ephemeral local keypair for the NIP-46 transport. Per-run
+cost is ~2 signatures (root event + session token), so even
+interactive approval in the signer app is tolerable; an auto-approve
+policy for the app key is still nicer for large publishes.
 
 Upload authorization uses one **session token** per run: a kind 24242
 event with `t=upload` + 2-minute `expiration` and no `x` tag, reused

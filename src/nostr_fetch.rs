@@ -6,12 +6,14 @@
 
 use anyhow::{anyhow, Result};
 use nostr::prelude::*;
+use nostr::signer::NostrSigner;
 use nostr_sdk::Client;
+use std::sync::Arc;
 
 /// Configuration for fetching a cache root event.
 pub struct FetchConfig {
-    /// Nostr secret key (for relay authentication if needed).
-    pub keys: Keys,
+    /// Nostr signer, used for the client identity (local keys or bunker).
+    pub signer: Arc<dyn NostrSigner>,
     /// Relays to query.
     pub relays: Vec<String>,
     /// Named channel. If None, queries kind 17091 (default cache).
@@ -37,7 +39,7 @@ pub struct RootEvent {
 /// Returns Ok(Some(event)) if found, Ok(None) if no event exists yet
 /// (first publish), or Err on network/relay errors.
 pub async fn fetch_latest_root(config: FetchConfig) -> Result<Option<RootEvent>> {
-    let client = Client::new(config.keys.clone());
+    let client = Client::new(config.signer);
 
     for relay in &config.relays {
         client.add_relay(relay).await?;

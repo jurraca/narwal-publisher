@@ -13,8 +13,15 @@ struct Cli {
     /// Path to the file holding the Nostr secret key (nsec or hex).
     /// Key material is file-only by design: CLI args leak via ps/history.
     /// Also settable via NARWAL_SEC_FILE (a path, never key material).
-    #[arg(long = "sec-file", env = "NARWAL_SEC_FILE")]
-    sec_file: PathBuf,
+    /// Exactly one of --sec-file / --bunker is required.
+    #[arg(long = "sec-file", env = "NARWAL_SEC_FILE", conflicts_with = "bunker", required_unless_present = "bunker")]
+    sec_file: Option<PathBuf>,
+
+    /// NIP-46 bunker URL (bunker://<pubkey>?relay=wss://...&secret=...).
+    /// Remote signing: the identity key never touches this machine.
+    /// Exactly one of --sec-file / --bunker is required.
+    #[arg(long, env = "NARWAL_BUNKER", conflicts_with = "sec_file", required_unless_present = "sec_file")]
+    bunker: Option<String>,
 
     /// Blossom server URL to upload to. Repeatable.
     #[arg(long = "blossom", required = true)]
@@ -61,6 +68,7 @@ async fn main() -> Result<()> {
     narwal_cli::publish(PublishConfig {
         store_paths: cli.store_paths,
         sec_file: cli.sec_file,
+        bunker: cli.bunker,
         blossom_servers: cli.blossom_servers,
         relays: cli.relays,
         channel: cli.channel,
@@ -92,7 +100,31 @@ mod tests {
     #[test]
     fn parses_sec_file() {
         let cli = Cli::try_parse_from(base_args()).unwrap();
-        assert_eq!(cli.sec_file, PathBuf::from("/run/secrets/nostr-sec"));
+        assert_eq!(cli.sec_file, Some(PathBuf::from("/run/secrets/nostr-sec")));
+        assert_eq!(cli.bunker, None);
+    }
+
+    #[test]
+    fn parses_bunker() {
+        let mut args = base_args();
+        // swap --sec-file for --bunker
+        args.remove(2);
+        args.remove(1);
+        args.extend([
+            "--bunker",
+            "bunker://79dff8f5cdb0a63b8678ad0ef2e2a3ff1e45ac1ff91b0b8c122a702c4c4?relay=wss://relay:32847",
+        ]);
+        let cli = Cli::try_parse_from(args).unwrap();
+        assert_eq!(cli.sec_file, None);
+        assert!(cli.bunker.unwrap().starts_with("bunker://"));
+    }
+
+    #[test]
+    fn rejects_sec_file_and_bunker_together() {
+        let mut args = base_args();
+        args.extend(["--bunker", "bunker://abc?relay=wss://relay:32847"]);
+        let err = Cli::try_parse_from(args).err().expect("conflict must be rejected");
+        assert!(err.to_string().contains("cannot be used with"), "unexpected: {err}");
     }
 
     #[test]

@@ -9,12 +9,14 @@
 
 use anyhow::Result;
 use nostr::prelude::*;
+use nostr::signer::NostrSigner;
 use nostr_sdk::Client;
+use std::sync::Arc;
 
 /// Configuration for publishing a cache root event.
 pub struct PublishConfig {
-    /// Nostr secret key.
-    pub keys: Keys,
+    /// Nostr signer (local keys or NIP-46 bunker).
+    pub signer: Arc<dyn NostrSigner>,
     /// Relays to publish to.
     pub relays: Vec<String>,
     /// Named channel. If None, publishes kind 17091 (default cache).
@@ -32,7 +34,7 @@ pub struct PublishConfig {
 ///
 /// Returns Ok(()) if at least one relay accepted the event.
 pub async fn publish_cache(config: PublishConfig) -> Result<()> {
-    let client = Client::new(config.keys.clone());
+    let client = Client::new(config.signer);
 
     for relay in &config.relays {
         client.add_relay(relay).await?;

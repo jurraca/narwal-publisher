@@ -14,7 +14,7 @@ name = "narwal-cli"
 path = "src/main.rs"
 
 [dependencies]
-nostr = { version = "0.44", features = ["nip44"] }
+nostr = { version = "0.44", features = ["nip44", "nip46"] }
 nostr-sdk = { version = "0.44", default-features = false, features = ["nip44", "nip59"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 rmp-serde = "1.3"

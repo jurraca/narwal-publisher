@@ -11,8 +11,10 @@ use anyhow::{anyhow, Result};
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use nostr::prelude::*;
+use nostr::signer::NostrSigner;
 use reqwest::Client;
 use sha2::{Digest, Sha256};
+use std::sync::Arc;
 
 /// Preflight threshold: HEAD /upload is only used for blobs > 2MB.
 const PREFLIGHT_SIZE_THRESHOLD: usize = 2 * 1024 * 1024;
@@ -52,16 +54,16 @@ struct CachedToken {
 
 /// A Blossom client that uploads blobs to one or more servers.
 pub struct BlossomUploader {
-    keys: Keys,
+    signer: Arc<dyn NostrSigner>,
     servers: Vec<String>,
     http: Client,
     auth_token: std::sync::Mutex<Option<CachedToken>>,
 }
 
 impl BlossomUploader {
-    pub fn new(keys: Keys, servers: Vec<String>) -> Self {
+    pub fn new(signer: Arc<dyn NostrSigner>, servers: Vec<String>) -> Self {
         Self {
-            keys,
+            signer,
             servers,
             http: Client::new(),
             auth_token: std::sync::Mutex::new(None),
@@ -83,7 +85,10 @@ impl BlossomUploader {
 
     /// Mint a fresh session token (no `x` tag: valid for any upload).
     /// NOTE: the returned header is bearer material — never log it.
-    fn mint_token(keys: &Keys) -> Result<CachedToken> {
+    /// Signing goes through the configured [`NostrSigner`], so this works
+    /// identically for local keys and NIP-46 bunkers (one round trip here
+    /// covers every upload until refresh).
+    async fn mint_token(signer: &Arc<dyn NostrSigner>) -> Result<CachedToken> {
         let now = Self::unix_now()?;
         let expiration = now + TOKEN_TTL_SECS;
 
@@ -92,9 +97,11 @@ impl BlossomUploader {
             Tag::custom(TagKind::custom("expiration"), vec![expiration.to_string()]),
         ];
 
-        let event = EventBuilder::new(Kind::Custom(24242), "Upload")
+        let pubkey = signer.get_public_key().await?;
+        let unsigned = EventBuilder::new(Kind::Custom(24242), "Upload")
             .tags(tags)
-            .sign_with_keys(keys)?;
+            .build(pubkey);
+        let event = signer.sign_event(unsigned).await?;
 
         let json = event.as_json();
         let encoded = BASE64.encode(json);
@@ -107,14 +114,14 @@ impl BlossomUploader {
     /// Session Authorization header, reusing the cached token until it
     /// nears expiry. Lock is held only for a timestamp check / swap —
     /// signing happens outside it.
-    fn auth_header(&self) -> Result<String> {
+    async fn auth_header(&self) -> Result<String> {
         let now = Self::unix_now()?;
         if let Some(tok) = self.auth_token.lock().map_err(|e| anyhow!("auth token lock poisoned: {e}"))?.as_ref() {
             if tok.expires_at.saturating_sub(now) >= REFRESH_MARGIN_SECS {
                 return Ok(tok.header.clone());
             }
         }
-        let tok = Self::mint_token(&self.keys)?;
+        let tok = Self::mint_token(&self.signer).await?;
         let header = tok.header.clone();
         *self.auth_token.lock().map_err(|e| anyhow!("auth token lock poisoned: {e}"))? = Some(tok);
         Ok(header)
@@ -217,12 +224,12 @@ impl BlossomUploader {
     /// Returns Ok(()) on success (201 Created or 200 OK = already exists).
     /// Returns Err for 413 or other fatal errors.
     async fn upload_to_server(&self, server: &str, data: &[u8], hash: &str) -> Result<()> {
-        let mut resp = self.put_upload(server, data, hash, &self.auth_header()?).await?;
+        let mut resp = self.put_upload(server, data, hash, &self.auth_header().await?).await?;
         if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
             // Token may have expired mid-run (clock skew, long uploads):
             // invalidate once and retry with a fresh token.
             self.invalidate_token();
-            resp = self.put_upload(server, data, hash, &self.auth_header()?).await?;
+            resp = self.put_upload(server, data, hash, &self.auth_header().await?).await?;
         }
 
         let status = resp.status();
@@ -373,7 +380,7 @@ mod tests {
     use super::*;
 
     fn test_uploader() -> BlossomUploader {
-        BlossomUploader::new(Keys::generate(), vec!["http://127.0.0.1:1".to_string()])
+        BlossomUploader::new(Arc::new(Keys::generate()), vec!["http://127.0.0.1:1".to_string()])
     }
 
     fn decode_auth_event(header: &str) -> nostr::Event {
@@ -392,10 +399,10 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn session_token_shape() {
+    #[tokio::test]
+    async fn session_token_shape() {
         let uploader = test_uploader();
-        let header = uploader.auth_header().unwrap();
+        let header = uploader.auth_header().await.unwrap();
         let event = decode_auth_event(&header);
         assert_eq!(event.kind.as_u16(), 24242);
         assert_eq!(tag_values(&event, "t"), vec!["upload".to_string()]);
@@ -405,36 +412,36 @@ mod tests {
         assert!(exp > now && exp <= now + TOKEN_TTL_SECS + 5, "expiry must be ~TTL in the future");
     }
 
-    #[test]
-    fn session_token_reused_across_calls() {
+    #[tokio::test]
+    async fn session_token_reused_across_calls() {
         let uploader = test_uploader();
-        let first = uploader.auth_header().unwrap();
-        let second = uploader.auth_header().unwrap();
+        let first = uploader.auth_header().await.unwrap();
+        let second = uploader.auth_header().await.unwrap();
         assert_eq!(first, second, "one token per session, not per blob");
     }
 
-    #[test]
-    fn expired_token_is_reminted() {
+    #[tokio::test]
+    async fn expired_token_is_reminted() {
         let uploader = test_uploader();
         // Plant a dead token straight into the cache.
         *uploader.auth_token.lock().unwrap() = Some(CachedToken {
             header: "Nostr stale".to_string(),
             expires_at: 1,
         });
-        let fresh = uploader.auth_header().unwrap();
+        let fresh = uploader.auth_header().await.unwrap();
         assert_ne!(fresh, "Nostr stale");
         assert!(fresh.starts_with("Nostr "));
     }
 
-    #[test]
-    fn invalidate_drops_cached_token() {
+    #[tokio::test]
+    async fn invalidate_drops_cached_token() {
         let uploader = test_uploader();
-        let first = uploader.auth_header().unwrap();
+        let first = uploader.auth_header().await.unwrap();
         uploader.invalidate_token();
         // Cache is empty now; a re-mint must differ (fresh timestamps) or at
         // minimum be a valid header. Sleep-free: expiration seconds may tie,
         // so only assert validity, not inequality.
-        let second = uploader.auth_header().unwrap();
+        let second = uploader.auth_header().await.unwrap();
         assert!(second.starts_with("Nostr "));
         let _ = first;
     }
@@ -455,10 +462,10 @@ mod tests {
         // NOTE: needs an allowlisted publisher key to actually succeed; with
         // a random key expect 401/403, which still proves the token *shape*
         // parses (not 400). This test documents shape acceptance, not policy.
-        let uploader = BlossomUploader::new(Keys::generate(), vec![server]);
+        let uploader = BlossomUploader::new(Arc::new(Keys::generate()), vec![server]);
         let data = b"narwal-cli session-token probe";
         let hash = BlossomUploader::hash_hex(data);
-        let auth = uploader.auth_header().unwrap();
+        let auth = uploader.auth_header().await.unwrap();
         let url = format!("{}/upload", uploader.servers[0].trim_end_matches('/'));
         let resp = uploader
             .http
