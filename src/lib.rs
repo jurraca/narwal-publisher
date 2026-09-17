@@ -17,6 +17,7 @@ pub mod nhash;
 pub mod nostr_fetch;
 pub mod nostr_pub;
 pub mod refscan;
+pub mod secrets;
 pub mod signing;
 pub mod store_path;
 pub mod tree_reader;
@@ -33,8 +34,9 @@ use std::path::PathBuf;
 pub struct PublishConfig {
     /// Nix store paths to publish (closure is resolved automatically).
     pub store_paths: Vec<PathBuf>,
-    /// Nostr secret key (nsec, hex, or ncryptsec).
-    pub sec: String,
+    /// Path to the file holding the Nostr secret key (nsec or hex).
+    /// Key material is file-only by design: CLI args leak via ps/history.
+    pub sec_file: PathBuf,
     /// Blossom server URLs to upload to.
     pub blossom_servers: Vec<String>,
     /// Nostr relay URLs to publish to.
@@ -65,7 +67,8 @@ pub async fn publish(config: PublishConfig) -> Result<()> {
         return Err(anyhow!("no store paths given"));
     }
 
-    let keys = Keys::parse(&config.sec)?;
+    let sec_contents = secrets::read_secret_file(&config.sec_file, "Nostr identity")?;
+    let keys = Keys::parse(&sec_contents)?;
     let store_dir = StoreDir::new(config.store_dir.to_string_lossy().as_ref())?;
 
     // Load signing key if provided.

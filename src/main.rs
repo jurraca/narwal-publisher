@@ -10,9 +10,11 @@ struct Cli {
     /// Nix store paths to publish (closure is resolved automatically).
     store_paths: Vec<PathBuf>,
 
-    /// Nostr secret key (nsec, hex, or ncryptsec).
-    #[arg(long)]
-    sec: String,
+    /// Path to the file holding the Nostr secret key (nsec or hex).
+    /// Key material is file-only by design: CLI args leak via ps/history.
+    /// Also settable via NARWAL_SEC_FILE (a path, never key material).
+    #[arg(long = "sec-file", env = "NARWAL_SEC_FILE")]
+    sec_file: PathBuf,
 
     /// Blossom server URL to upload to. Repeatable.
     #[arg(long = "blossom", required = true)]
@@ -58,7 +60,7 @@ async fn main() -> Result<()> {
 
     narwal_cli::publish(PublishConfig {
         store_paths: cli.store_paths,
-        sec: cli.sec,
+        sec_file: cli.sec_file,
         blossom_servers: cli.blossom_servers,
         relays: cli.relays,
         channel: cli.channel,
@@ -68,4 +70,38 @@ async fn main() -> Result<()> {
         store_dir: cli.store_dir,
     })
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    fn base_args() -> Vec<&'static str> {
+        vec![
+            "narwal-cli",
+            "--sec-file",
+            "/run/secrets/nostr-sec",
+            "--blossom",
+            "http://blossom:3000",
+            "--relay",
+            "ws://relay:32847",
+        ]
+    }
+
+    #[test]
+    fn parses_sec_file() {
+        let cli = Cli::try_parse_from(base_args()).unwrap();
+        assert_eq!(cli.sec_file, PathBuf::from("/run/secrets/nostr-sec"));
+    }
+
+    #[test]
+    fn rejects_inline_sec() {
+        // Key material on the command line was removed by design: it leaks
+        // via ps, shell history, and CI logs. Use --sec-file.
+        let mut args = base_args();
+        args.extend(["--sec", "nsec1deadbeef"]);
+        let err = Cli::try_parse_from(args).err().expect("--sec must be rejected");
+        assert!(err.to_string().contains("unexpected argument '--sec'"), "unexpected: {err}");
+    }
 }

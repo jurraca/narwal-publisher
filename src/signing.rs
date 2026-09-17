@@ -26,7 +26,9 @@ impl SigningKeyPair {
     ///
     /// Format: `keyname:base64(64_bytes)` where the 64 bytes are the
     /// 32-byte Ed25519 seed followed by the 32-byte public key.
+    /// Refuses group/world-accessible files (see `crate::secrets`).
     pub fn from_secret_file(path: &Path) -> Result<Self> {
+        crate::secrets::deny_weak_permissions(path, "Nix cache signing key")?;
         let content = std::fs::read_to_string(path)
             .map_err(|e| anyhow!("failed to read secret key file {}: {}", path.display(), e))?;
         Self::from_secret_str(content.trim())
@@ -149,9 +151,29 @@ mod tests {
         let nix_key = nix_format_key(&signing_key);
 
         std::fs::write(&key_path, &nix_key).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
 
         let pair = SigningKeyPair::from_secret_file(&key_path).unwrap();
         assert_eq!(pair.keyname, "test-cache-1");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_from_file_rejects_weak_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().unwrap();
+        let key_path = dir.path().join("secret-key");
+
+        let signing_key = random_signing_key();
+        std::fs::write(&key_path, nix_format_key(&signing_key)).unwrap();
+        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o640)).unwrap();
+
+        let err = SigningKeyPair::from_secret_file(&key_path).err().expect("weak perms must be refused");
+        assert!(err.to_string().contains("group/world-accessible"), "unexpected: {err}");
     }
 
     #[test]
