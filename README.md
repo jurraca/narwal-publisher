@@ -76,9 +76,17 @@ leaks through the process table (`ps`), shell history, and CI logs.
 Both files are refused at load time unless owner-only accessible
 (`chmod 600`); group/world-readable key files are a hard error, not
 a warning. Planned next step: NIP-46 bunker support so the Nostr key
-never touches the publisher machine (note: Blossom upload auth needs
-one signature per blob, so a bunker requires an auto-approve policy
-for the publisher key to be usable).
+never touches the publisher machine.
+
+Upload authorization uses one **session token** per run: a kind 24242
+event with `t=upload` + 2-minute `expiration` and no `x` tag, reused
+for every blob on every server and re-minted under 60s of remaining
+life (plus a one-shot retry on an expiry 401). The server skips its
+per-blob check when no `x` tags are present, so this is protocol-clean
+— and it keeps per-run Nostr signatures at ~2 (root event + token),
+which is also what makes a future bunker integration viable. Bearer
+tradeoff: the token authorizes any upload for its short life, so the
+header value is never logged.
 
 Client side (fetching through Narwal):
 
