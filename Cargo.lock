@@ -1080,7 +1080,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "nix-blossom-publish"
+name = "narwal-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",

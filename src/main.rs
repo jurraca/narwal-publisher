@@ -1,11 +1,11 @@
 use anyhow::Result;
 use clap::Parser;
-use nix_blossom_publish::PublishConfig;
+use narwal_cli::PublishConfig;
 use std::path::PathBuf;
 
 /// Publish a Nix binary cache to Blossom + Nostr.
 #[derive(Parser)]
-#[command(name = "nix-blossom-publish")]
+#[command(name = "narwal-cli")]
 struct Cli {
     /// Nix store paths to publish (closure is resolved automatically).
     store_paths: Vec<PathBuf>,
@@ -56,7 +56,7 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
-    nix_blossom_publish::publish(PublishConfig {
+    narwal_cli::publish(PublishConfig {
         store_paths: cli.store_paths,
         sec: cli.sec,
         blossom_servers: cli.blossom_servers,

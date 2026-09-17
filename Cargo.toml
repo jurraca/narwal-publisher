@@ -1,16 +1,16 @@
 [package]
-name = "nix-blossom-publish"
+name = "narwal-cli"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "Publish a Nix binary cache to Blossom + Nostr"
+description = "Publish a Nix binary cache via Blossom + Nostr"
 
 [lib]
-name = "nix_blossom_publish"
+name = "narwal_cli"
 path = "src/lib.rs"
 
 [[bin]]
-name = "nix-blossom-publish"
+name = "narwal-cli"
 path = "src/main.rs"
 
 [dependencies]

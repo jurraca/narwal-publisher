@@ -1,4 +1,4 @@
-//! nix-blossom-publish library.
+//! narwal-cli library.
 //!
 //! Publish Nix binary caches to Blossom + Nostr. Fully self-contained —
 //! no `nix`, `nix-store`, or `nix-daemon` required. NAR encoding, closure
