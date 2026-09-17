@@ -14,7 +14,7 @@
 //! Encoding uses rmp_serde::to_vec_named (map with string keys, not array).
 //!
 //! Large directories are chunked into sub-directories (max 174 links per node),
-//! with all intermediate nodes also using t=2 (Dir) for Rhizome compatibility.
+//! with all intermediate nodes also using t=2 (Dir) for Hashtree compatibility.
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
