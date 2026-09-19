@@ -8,13 +8,13 @@
 
 pub mod blossom;
 pub mod blossom_fetch;
-pub mod bunker;
 pub mod closure;
 pub mod compress;
 pub mod manifest;
 pub mod nar;
 pub mod narinfo;
 pub mod nhash;
+pub mod nip46;
 pub mod nostr_fetch;
 pub mod nostr_pub;
 pub mod refscan;
@@ -43,8 +43,18 @@ pub struct PublishConfig {
     pub sec_file: Option<PathBuf>,
     /// NIP-46 bunker URL (`bunker://<pubkey>?relay=...&secret=...`).
     /// Remote signing: the identity key never touches this machine.
-    /// Exactly one of `sec_file` / `bunker` must be set.
+    /// Exactly one of `sec_file` / `bunker` / `qr` must be set.
     pub bunker: Option<String>,
+    /// Pair via `nostrconnect://` QR code (Amber-style signer apps).
+    /// Reuses the stored pairing when present, so the scan happens once.
+    /// Exactly one of `sec_file` / `bunker` / `qr` must be set.
+    pub qr: bool,
+    /// Pairing file for `--qr` (default: ~/.local/share/narwal-cli/pairing.json).
+    pub pairing_file: Option<PathBuf>,
+    /// Handshake relays for `--qr` pairing (default: public relays).
+    /// Must be normal relays — our cache relay's kind allowlist would
+    /// drop kind-24133 handshake traffic.
+    pub bunker_relays: Vec<String>,
     /// Blossom server URLs to upload to.
     pub blossom_servers: Vec<String>,
     /// Nostr relay URLs to publish to.
@@ -75,13 +85,24 @@ pub async fn publish(config: PublishConfig) -> Result<()> {
         return Err(anyhow!("no store paths given"));
     }
 
-    let signer: Arc<dyn NostrSigner> = match (&config.sec_file, &config.bunker) {
-        (Some(path), None) => {
+    let signer: Arc<dyn NostrSigner> = match (&config.sec_file, &config.bunker, config.qr) {
+        (Some(path), None, false) => {
             let sec_contents = secrets::read_secret_file(path, "Nostr identity")?;
             Arc::new(Keys::parse(&sec_contents)?)
         }
-        (None, Some(url)) => Arc::new(bunker::BunkerSigner::new(url)?),
-        _ => return Err(anyhow!("exactly one of --sec-file or --bunker is required")),
+        (None, Some(url), false) => Arc::new(nip46::signer::BunkerSigner::new(url)?),
+        (None, None, true) => {
+            let pairing_file = match &config.pairing_file {
+                Some(p) => p.clone(),
+                None => nip46::session::default_pairing_file()?,
+            };
+            Arc::new(nip46::pair::pair_via_qr(&config.bunker_relays, &pairing_file).await?)
+        }
+        _ => {
+            return Err(anyhow!(
+                "exactly one of --sec-file, --bunker or --qr is required"
+            ))
+        }
     };
     let store_dir = StoreDir::new(config.store_dir.to_string_lossy().as_ref())?;
 
