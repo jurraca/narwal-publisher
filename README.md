@@ -1,10 +1,9 @@
-# narwal-cli — publisher for the Narwal nix cache
+# narwal-cli
 
-CLI that publishes Nix store paths as a binary cache backed by
-[Blossom](https://github.com/hzrd149/blossom) blobs + a Nostr
-hashtree root, for consumption by the [Narwal](https://github.com/jurraca/narwal)
-server. Mirrors the `narwal` server; the two are developed in lockstep
-(`../narwal`, `../SPEC.md`).
+Publish Nix store paths to Blossom and announce them via Nostr.
+
+A [Narwal](https://github.com/jurraca/narwal) cache can then
+source and index packages, and serve as a Nix binary cache.
 
 ## What it does
 
@@ -27,7 +26,7 @@ Nix clients only ever see a regular binary cache.
 
 Pure Rust, no Nix runtime dependency. Nix-format work (NAR
 encode/hash, reference scanning, narinfo build/sign, derivation
-parsing, nix base32) is handled by three Cachix crates:
+parsing, nix base32) is handled by three [Cachix](https://github.com/cachix) crates:
 
 - [`nix-archive`](https://crates.io/crates/nix-archive) — NAR encode/hash, reference scanning
 - [`nix-narinfo`](https://crates.io/crates/nix-narinfo) — narinfo build/sign, fingerprint
@@ -39,19 +38,34 @@ uploads), `ed25519-dalek` (narinfo signing), `xz2`/`zstd`
 
 ## Usage
 
+You need two secrets: your Nostr signing key ("nsec") to sign the
+event announcing the cache state and your Nix signing key to sign
+the package builds. You can choose to omit the latter, but stock
+Nix clients reject unsigned packages unless the client explicitly
+opts out.
+
 ```bash
-# dry run first: hashes + manifest, no upload, no publish
 narwal-cli /nix/store/<hash>-hello-2.12.1 \
   --sec-file ./nostr.sec \
   --blossom http://<blossom-host>:3000 \
   --relay ws://<relay-host>:32847 \
   --channel test \
   --nix-sig-key ./mycache.sec \
-  --dry-run
+  --dry-run # builds, but doesn't publish
 
 # same, but signing via a NIP-46 bunker instead of a local key file:
 narwal-cli /nix/store/<hash>-hello-2.12.1 \
   --bunker "bunker://<bunker-pubkey>?relay=wss://<relay>&secret=<token>" \
+  --blossom http://<blossom-host>:3000 \
+  --relay ws://<relay-host>:32847 \
+  --channel test \
+  --nix-sig-key ./mycache.sec \
+  --dry-run
+
+# or pair once with your phone signer (Amber) via QR, then sign per run:
+narwal-cli pair   # prints a nostrconnect:// QR — scan it, approve, done
+narwal-cli /nix/store/<hash>-hello-2.12.1 \
+  --qr \
   --blossom http://<blossom-host>:3000 \
   --relay ws://<relay-host>:32847 \
   --channel test \
@@ -75,9 +89,7 @@ narwal-cli /nix/store/<hash>-hello-2.12.1 \
 
 ## Security: key handling
 
-Both publisher secrets are **file-only by design**. There is
-deliberately no `--sec` flag: raw key material on a command line
-leaks through the process table (`ps`), shell history, and CI logs.
+Both publisher secrets can be provided by file.
 
 - Nostr identity (`--sec-file`): file containing `nsec` or hex.
 - Nix cache key (`--nix-sig-key`): `nix keygen-secret` format file.
@@ -90,21 +102,34 @@ NIP-46 bunkers are supported as an alternative to `--sec-file`:
 pass `--bunker "bunker://<pubkey>?relay=…&secret=…"` (or
 `NARWAL_BUNKER`) and the identity key never touches the publisher
 machine — signatures are requested from the signer app over Nostr.
-Exactly one of `--sec-file` / `--bunker` is required. The app holds
-only an ephemeral local keypair for the NIP-46 transport. Per-run
-cost is ~2 signatures (root event + session token), so even
-interactive approval in the signer app is tolerable; an auto-approve
-policy for the app key is still nicer for large publishes.
+Exactly one of `--sec-file` / `--bunker` / `--qr` is required.
 
-Upload authorization uses one **session token** per run: a kind 24242
-event with `t=upload` + 2-minute `expiration` and no `x` tag, reused
-for every blob on every server and re-minted under 60s of remaining
-life (plus a one-shot retry on an expiry 401). The server skips its
-per-blob check when no `x` tags are present, so this is protocol-clean
-— and it keeps per-run Nostr signatures at ~2 (root event + token),
-which is also what makes a future bunker integration viable. Bearer
-tradeoff: the token authorizes any upload for its short life, so the
-header value is never logged.
+Some signer apps (Amber) never export `bunker://` URLs — they scan a
+`nostrconnect://` QR the client shows instead. Two ways to use it:
+
+- `narwal-cli pair` — standalone ceremony: prints URI + terminal QR,
+  waits up to 1 minute for the signer app, which answers with a
+  `connect` *response* echoing our anti-spoofing secret (there is no
+  ack-of-ack in NIP-46 — the response is the acknowledgement). The
+  CLI takes the remote-signer key from the response author and learns
+  the user key via `get_public_key` best-effort, adopts the signer's
+  `switch_relays` answer if any, and saves the app key, signer key,
+  user key **and the relays the signer is on** to
+  `~/.local/share/narwal-cli/pairing.json` (0600). If the signer is
+  not yet serving requests, the pairing is still saved and the user
+  key is resolved lazily on first use. Re-running `pair` replaces the
+  stored pairing (old user pubkey is logged).
+- `--qr` on publish — same ceremony inline when no pairing is stored,
+  straight to publishing afterwards.
+
+Later runs reuse the stored app key **and the stored relays** — Amber
+recognizes the app, no re-scan; each run just signs (subject to Amber's
+own policy). Using the stored relays matters: re-deriving from CLI
+defaults would talk to a relay the signer never checks, and the request
+would silently never be seen. On each reuse the CLI also asks the signer
+where it is now (`switch_relays`, short timeout) and updates the file, so
+a signer that moved stays reachable. The app key is not the identity
+key, but treat the file as a bearer credential anyway (written 0600).
 
 Client side (fetching through Narwal):
 
