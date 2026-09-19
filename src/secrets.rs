@@ -19,6 +19,30 @@ pub fn read_secret_file(path: &Path, what: &str) -> Result<String> {
     Ok(content.trim().to_string())
 }
 
+/// Write a secret file with owner-only permissions.
+///
+/// Creates parent directories as needed. On Unix the file mode is forced
+/// to 0600 regardless of umask.
+pub fn write_secret_file(path: &Path, contents: &str) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                anyhow!("failed to create secret directory {}: {}", parent.display(), e)
+            })?;
+        }
+    }
+    std::fs::write(path, contents)
+        .map_err(|e| anyhow!("failed to write secret file {}: {}", path.display(), e))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(|e| {
+            anyhow!("failed to lock down secret file {}: {}", path.display(), e)
+        })?;
+    }
+    Ok(())
+}
+
 /// Refuse to load a secret from a group- or world-accessible file.
 ///
 /// SSH-style hard error: `mode & 0o077` must be zero. On non-Unix
